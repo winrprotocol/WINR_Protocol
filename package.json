@@ -1,0 +1,17 @@
+{
+  "name": "WINR_Protocol",
+  "version": "1.0.0",
+  "main": "index.js",
+  "repository": "git@github.com:winrprotocol/WINR_Protocol.git",
+  "author": "balding-ghost <ghost@just.bet>",
+  "license": "MIT",
+  "devDependencies": {
+    "hardhat": "^2.14.0"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^4.8.3",
+    "@openzeppelin/hardhat-upgrades": "^1.22.1",
+    "@rari-capital/solmate": "^6.4.0",
+    "solmate": "^6.7.0"
+  }
+}
