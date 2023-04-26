@@ -2,17 +2,14 @@
 
 > Decentralized On-Chain E-Gaming Infrastructure.
 
-![WINR Protocol Logo](docs/winr_logo.jpg)
-
-The WINR Protocol pioneers the transition of e-gaming to web3 by providing smart contract tools, a liquidity engine, and an incentive framework to builders.
+<center>The WINR Protocol pioneers the transition of e-gaming to web3 by providing smart contract tools, a liquidity engine, and an incentive framework to builders.</center>
 
 ---
 
-## About WINR Protocol
+## Overview WINR Protocol
+The WINR Protocol smart contract-based game engine introduces a concept and infrastructure to make it easier for on-chain game developers and producers to create engaging, immersive experiences.
 
 ![WINR Protocol Diagram](docs/schema.png)
-
-The WINR Protocol smart contract-based game engine introduces a concept and infrastructure to make it easier for on-chain game developers and producers to create engaging, immersive experiences.
 
 The WINR Protocol Game Engine is an innovative framework that streamlines the process of creating on-chain games, allowing developers to focus on game mechanics and design rather than getting bogged down in complex smart contract development.
 
@@ -29,7 +26,22 @@ One of the critical components of the WINR Protocol Game Engine is its ease of u
 ### Technical overview - User flow dynamics
 ![WINR Protocol Logo](docs/schema_2.jpeg)
 
-## Developing
+### Design choices
+At WINR Protocol, we believe that smart contract design is a critical aspect of building trust and reliability into our bankroll liquidity engine.
+
+#### Maximizing Trustlessness
+To ensure that our smart contracts are maximally trustless, we have chosen not to use any upgradable proxies. This means that the code for our smart contracts is immutable and cannot be changed, except through a new deployment. This design choice enhances security by reducing the attack surface and minimizing the risk of bugs or vulnerabilities being introduced through upgrades.
+
+#### Using Reputable Blueprints
+We have used the GMX repository, a reputable and well-tested repository, as the blueprint for our WLP vault. This ensures that we have a strong foundation for our smart contracts and reduces the likelihood of unexpected issues arising.
+
+#### Protecting Important Functions
+To safeguard against unauthorized or accidental changes to our smart contracts, we have implemented time locks on all important functions. This ensures that any proposed changes will be subject to a waiting period, during which they can be reviewed and challenged if necessary.
+
+#### Implementing Circuit Breakers
+We have also implemented circuit breakers in our smart contracts to protect against huge unexpected shortfalls. In the event of a large loss or other unexpected event, the circuit breakers can be triggered to pause the smart contract and prevent further losses or damage.
+
+## Installation and configuration 
 
 ### Setup
 ```
@@ -47,7 +59,7 @@ forge build
 
 ---
 
-# Contrats 
+# Contracts 
 
 ### AccessControlBase.sol
 AccessControlBase is a contract for access control management. It provides basic access control functionality such as role-based access control and permission management.
@@ -81,6 +93,13 @@ WINRTimelock is a contract for time-locking WINR tokens. It allows for the locki
 
 ### WLPManager.sol
 WLPManager is a contract for managing Wrapped Liquidity Provider (WLP) tokens. WLP tokens are used to represent liquidity provider shares in the Vault contract. The WLPManager contract allows for the creation and management of WLP tokens, as well as the conversion of WLP tokens back into liquidity provider shares.
+
+---
+
+# More about WINR Protocol
+WINR Protocol exists to bring transparency, honesty, and the power of Web3 to the games industry. Want to join us? For further technical documentation on protocol specification and usage, please see the [Documentation Hub](https://docs.winr.games/)
+
+![WINR Protocol Logo](docs/WINR_Logo_Black.jpg)
 
 ---
 
