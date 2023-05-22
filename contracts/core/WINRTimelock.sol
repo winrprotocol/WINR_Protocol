@@ -25,8 +25,15 @@ contract WINRTimelock is IWINRTimelock, TimelockController {
 		uint256 _tokenAmount,
 		address _destination
 	) external {
-		require(msg.sender == address(this), "TimelockController: caller must be timelock");
-		SafeERC20.safeTransfer(IERC20(_tokenAddress), _destination, _tokenAmount);
+		require(
+			msg.sender == address(this), 
+			"TimelockController: caller must be timelock"
+		);
+		SafeERC20.safeTransfer(
+			IERC20(_tokenAddress), 
+			_destination, 
+			_tokenAmount
+		);
 		emit TransferOutTokens(_tokenAddress, _tokenAmount, _destination);
 	}
 }

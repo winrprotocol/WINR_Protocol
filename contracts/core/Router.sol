@@ -14,19 +14,17 @@ contract Router is IRouter, AccessControlBase {
 
 	address public immutable weth;
 	address public immutable usdw;
-	address public immutable vaultAddress;
+	address public vaultAddress;
 	mapping(address => bool) public plugins;
 	mapping(address => mapping(address => bool)) public approvedPlugins;
 	bool public pluginsEnabled = true;
 
 	constructor(
-		address _vaultAddress,
 		address _usdw,
 		address _weth,
 		address _vaultRegistry,
 		address _timelock
 	) AccessControlBase(_vaultRegistry, _timelock) {
-		vaultAddress = _vaultAddress;
 		usdw = _usdw;
 		weth = _weth;
 	}
@@ -45,15 +43,19 @@ contract Router is IRouter, AccessControlBase {
 		plugins[_plugin] = true;
 	}
 
+	function setVault(address _vault) external onlyGovernance {
+		vaultAddress = _vault;
+	}
+
 	function removePlugin(address _plugin) external onlyGovernance {
 		plugins[_plugin] = false;
 	}
 
-	function approvePlugin(address _plugin) external onlyManager {
+	function approvePlugin(address _plugin) external onlyTeam {
 		approvedPlugins[_msgSender()][_plugin] = true;
 	}
 
-	function denyPlugin(address _plugin) external onlyManager {
+	function denyPlugin(address _plugin) external onlyTeam {
 		approvedPlugins[_msgSender()][_plugin] = false;
 	}
 
@@ -76,11 +78,6 @@ contract Router is IRouter, AccessControlBase {
 		SafeERC20.safeTransferFrom(IERC20(_token), _account, _receiver, _amount);
 	}
 
-	function directPoolDeposit(address _token, uint256 _amount) external {
-		SafeERC20.safeTransferFrom(IERC20(_token), _sender(), vaultAddress, _amount);
-		IVault(vaultAddress).directPoolDeposit(_token);
-	}
-
 	/**
 	 * @notice public swap function with the vaultAddress
 	 * @dev if you pass [dai, eth, btc] in path you are selling dai for eth in the vaultAddress, then you sell the eth for btc
@@ -99,10 +96,6 @@ contract Router is IRouter, AccessControlBase {
 		uint256 amountOut = _swap(_path, _minOut, _receiver);
 		emit Swap(_msgSender(), _path[0], _path[_path.length - 1], _amountIn, amountOut);
 	}
-
-	// function swapAndBet(
-
-	// )
 
 	/**
 	 * @dev if you pass [dai, eth, btc] in path you are selling dai for eth in the vaultAddress, then you sell the eth for btc
@@ -191,7 +184,7 @@ contract Router is IRouter, AccessControlBase {
 		uint256 amountOut;
 		if (_tokenOut == usdw) {
 			// buyUSDW
-			amountOut = IVault(vaultAddress).deposit(_tokenIn, _receiver);
+			amountOut = IVault(vaultAddress).deposit(_tokenIn, _receiver, false);
 		} else if (_tokenIn == usdw) {
 			// sellUSDW
 			amountOut = IVault(vaultAddress).withdraw(_tokenOut, _receiver);

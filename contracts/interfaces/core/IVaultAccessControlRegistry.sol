@@ -15,9 +15,13 @@ interface IVaultAccessControlRegistry is IAccessControl {
 
 	function isCallerGovernance(address _account) external view returns (bool);
 
-	function isCallerManager(address _account) external view returns (bool);
-
 	function isCallerEmergency(address _account) external view returns (bool);
+
+	function isCallerProtocol(address _account) external view returns (bool);
+
+	function isCallerTeam(address _account) external view returns (bool);
+
+	function isCallerSupport(address _account) external view returns (bool);
 
 	function isProtocolPaused() external view returns (bool);
 

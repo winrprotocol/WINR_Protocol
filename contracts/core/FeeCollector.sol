@@ -7,6 +7,7 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "../interfaces/core/IVault.sol";
 import "../interfaces/core/IWLPManager.sol";
 import "../interfaces/core/ITokenManager.sol";
+import "../interfaces/stakings/IWINRStaking.sol";
 import "../interfaces/core/IFeeCollector.sol";
 import "../tokens/wlp/interfaces/IBasicFDT.sol";
 import "./AccessControlBase.sol";
@@ -21,6 +22,7 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 	IVault public vault;
 	IWLPManager public wlpManager;
 	IERC20 public wlp;
+	IWINRStaking public winrStaking;
 	// the fee distribution reward interval
 	uint256 public rewardInterval = 1 days;
 	// array with addresses of all tokens fees are collected in
@@ -46,6 +48,7 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 		address _vault,
 		address _wlpManager,
 		address _wlpClaimContract,
+		address _tokenManagerContract,
 		address _winrStakingContract,
 		address _buybackAndBurnContract,
 		address _coreDevelopment,
@@ -59,7 +62,7 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 
 		addresses = IFeeCollector.DistributionAddresses(
 			_wlpClaimContract,
-			_winrStakingContract,
+			_tokenManagerContract,
 			_buybackAndBurnContract,
 			_coreDevelopment,
 			_referralContract
@@ -74,9 +77,10 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 		);
 
 		wlp = IERC20(wlpManager.wlp());
+		winrStaking = IWINRStaking(_winrStakingContract);
 
 		whitelistedDestinations[_wlpClaimContract] = true;
-		whitelistedDestinations[_winrStakingContract] = true;
+		whitelistedDestinations[_tokenManagerContract] = true;
 		whitelistedDestinations[_coreDevelopment] = true;
 		whitelistedDestinations[_buybackAndBurnContract] = true;
 		whitelistedDestinations[_referralContract] = true;
@@ -132,17 +136,17 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 	}
 
 	/**
-	 * @param _winrStakingContract address for the staking destination
+	 * @param _tokenManagerContract address for the staking destination
 	 */
 	function setWinrStakingContract(
-		address _winrStakingContract
+		address _tokenManagerContract
 	) external onlyTimelockGovernance {
-		_checkNotNull(_winrStakingContract);
+		_checkNotNull(_tokenManagerContract);
 		// remove previous destination from whitelist
 		whitelistedDestinations[addresses.winrStaking] = false;
-		addresses.winrStaking = _winrStakingContract;
-		whitelistedDestinations[_winrStakingContract] = true;
-		emit SetStakingDestination(_winrStakingContract);
+		addresses.winrStaking = _tokenManagerContract;
+		whitelistedDestinations[_tokenManagerContract] = true;
+		emit SetStakingDestination(_tokenManagerContract);
 	}
 
 	/**
@@ -178,7 +182,7 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 	function addToWhitelist(
 		address _toWhitelistAddress,
 		bool _setting
-	) external onlyTimelockGovernance {
+	) external onlyTeam {
 		_checkNotNull(_toWhitelistAddress);
 		whitelistedDestinations[_toWhitelistAddress] = _setting;
 		emit WhitelistEdit(_toWhitelistAddress, _setting);
@@ -189,7 +193,7 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 	 * @dev the configured fee collection interval cannot exceed the MAX_INTERVAL
 	 * @param _timeInterval uint time interval for fee collection
 	 */
-	function setRewardInterval(uint256 _timeInterval) external onlyGovernance {
+	function setRewardInterval(uint256 _timeInterval) external onlyTeam {
 		require(_timeInterval <= MAX_INTERVAL, "FeeCollector: invalid interval");
 		rewardInterval = _timeInterval;
 		emit SetRewardInterval(_timeInterval);
@@ -266,16 +270,11 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 	/**
 	 * @notice function that syncs the whitelisted tokens with the vault
 	 */
-	function syncWhitelistedTokens() external onlyManager {
+	function syncWhitelistedTokens() external onlySupport {
 		delete allWhitelistedTokensFeeCollector;
 		uint256 count_ = vault.allWhitelistedTokensLength();
 		for (uint256 i = 0; i < count_; ++i) {
 			address token_ = vault.allWhitelistedTokens(i);
-			// bool isWhitelisted_ = vault.whitelistedTokens(token_);
-			// // if token is not whitelisted, don't add it to the whitelist
-			// if (!isWhitelisted_) {
-			// 	continue;
-			// }
 			allWhitelistedTokensFeeCollector.push(token_);
 		}
 		emit SyncTokens();
@@ -285,7 +284,7 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 	 * @notice manually adds a tokenaddress to the vault
 	 * @param _tokenToAdd address to manually add to the llWhitelistedTokensFeeCollector array
 	 */
-	function addTokenToWhitelistList(address _tokenToAdd) external onlyManager {
+	function addTokenToWhitelistList(address _tokenToAdd) external onlyTeam {
 		allWhitelistedTokensFeeCollector.push(_tokenToAdd);
 		emit TokenAddedToWhitelist(_tokenToAdd);
 	}
@@ -294,7 +293,7 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 	 * @notice deletes entire whitelist array
 	 * @dev this function should be used before syncWhitelistedTokens is called!
 	 */
-	function deleteWhitelistTokenList() external onlyManager {
+	function deleteWhitelistTokenList() external onlyTeam {
 		delete allWhitelistedTokensFeeCollector;
 		emit DeleteAllWhitelistedTokens();
 	}
@@ -304,7 +303,7 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 	/**
 	 * @notice manually sync last distribution time so they are in line again
 	 */
-	function syncLastDistribution() external onlyManager {
+	function syncLastDistribution() external onlySupport {
 		lastDistributionTimes = DistributionTimes(
 			block.timestamp,
 			block.timestamp,
@@ -368,7 +367,7 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 	 * @notice function that claims/farms the wager+swap fees in vault, and distributes it to wlp holders, stakers and core dev
 	 * @dev function can only be called once per interval period
 	 */
-	function withdrawFeesAll() external onlyManager {
+	function withdrawFeesAll() external onlySupport {
 		_withdrawAllFees();
 		emit FeesDistributed();
 	}
@@ -384,7 +383,7 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 		address _targetToken,
 		uint256 _amount,
 		address _destination
-	) external onlyManager {
+	) external onlySupport {
 		/**
 		 * context: even though the manager role will be a trusted signer, we do not want that that it is possible for this role to steal funds. Therefor the manager role can only manually transfer funds to a wallet that is whitelisted. On this whitelist only multi-sigs and governance controlled treasury wallets should be added.
 		 */
@@ -433,7 +432,7 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 	 * @notice emergency function that transfers all the tokens in this contact to the timelock contract.
 	 * @dev this function should be called when there is an exploit or a key of one of the manager is exposed
 	 */
-	function emergencyDistributionToTimelock() external onlyManager {
+	function emergencyDistributionToTimelock() external onlyTeam {
 		address[] memory wlTokens_ = allWhitelistedTokensFeeCollector;
 		// iterate over all te tokens that now sit in this contract
 		for (uint256 i = 0; i < wlTokens_.length; ++i) {
@@ -457,7 +456,7 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 	 * @notice function distributes all the accumulated/realized fees to the different destinations
 	 * @dev this function does not collect fees! only distributes fees that are already in the feecollector contract
 	 */
-	function distributeAll() external onlyManager {
+	function distributeAll() external onlySupport {
 		transferBuyBackAndBurn();
 		transferWinrStaking();
 		transferWlpRewards();
@@ -468,7 +467,7 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 	/**
 	 * @notice function that transfers the accumulated fees to the configured buyback contract
 	 */
-	function transferBuyBackAndBurn() public onlyManager {
+	function transferBuyBackAndBurn() public onlySupport {
 		// collected fees can only be distributed once every rewardIntervval
 		if (!_checkLastTime(lastDistributionTimes.buybackAndBurn)) {
 			// we return early, since the last time the winr staking was called was less than the reward interval
@@ -487,7 +486,7 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 	/**
 	 * @notice function that transfers the accumulated fees to the configured core/dev contract destination
 	 */
-	function transferCore() public onlyManager {
+	function transferCore() public onlySupport {
 		// collected fees can only be distributed once every rewardIntervval
 		if (!_checkLastTime(lastDistributionTimes.core)) {
 			// we return early, since the last time the winr staking was called was less than the reward interval
@@ -506,7 +505,7 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 	/**
 	 * @notice function that transfers the accumulated fees to the configured wlp contract destination
 	 */
-	function transferWlpRewards() public onlyManager {
+	function transferWlpRewards() public onlySupport {
 		// collected fees can only be distributed once every rewardIntervval
 		if (!_checkLastTime(lastDistributionTimes.wlpClaim)) {
 			// we return early, since the last time the winr staking was called was less than the reward interval
@@ -519,7 +518,7 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 	/**
 	 * @param _token address of the token fees will be withdrawn for
 	 */
-	function manualWithdrawFeesFromVault(address _token) external onlyManager {
+	function manualWithdrawFeesFromVault(address _token) external onlyTeam {
 		IVault vault_ = vault;
 		(uint256 swapReserve_, uint256 wagerReserve_, uint256 referralReserve_) = vault_
 			.withdrawAllFees(_token);
@@ -566,18 +565,23 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 
 	/**
 	 * @notice transfer the winr staking reward to the desination vwinr staking contract for claiming
+	 * @notice the destination address is the Token Manager contract
+	 * @notice checks if the total weight is 0, if so, does not transfer
 	 */
-	function transferWinrStaking() public onlyManager {
+	function transferWinrStaking() public onlySupport {
 		// collected fees can only be distributed once every rewardIntervval
 		if (!_checkLastTime(lastDistributionTimes.winrStaking)) {
 			// we return early, since the last time the winr staking was called was less than the reward interval
 			return;
 		}
 		lastDistributionTimes.winrStaking = block.timestamp;
-		// require(reserves.staking != 0, "No token for winr staking");
+		
 		uint256 amount_ = reserves.staking;
 		reserves.staking = 0;
 		if (amount_ == 0) {
+			return;
+		}
+		if(winrStaking.totalWeight() == 0) {
 			return;
 		}
 		wlp.transfer(addresses.winrStaking, amount_);
@@ -589,7 +593,7 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 	/**
 	 * @notice transfer the referral reward to the desination referral contract for distribution and cliaming
 	 */
-	function transferReferral() public onlyManager {
+	function transferReferral() public onlySupport {
 		// collected fees can only be distributed once every rewardIntervval
 		if (!_checkLastTime(lastDistributionTimes.referral)) {
 			// we return early, since the last time the referral was called was less than the reward interval
@@ -637,9 +641,6 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 		}
 	}
 
-	/**
-	 *
-	 */
 	function _checkLastTime(uint256 _lastTime) internal view returns (bool) {
 		// if true, it means a distribution can be done, since the current time is greater than the last time + the reward interval
 		bool outsideInterval_ = _lastTime + rewardInterval <= block.timestamp;
@@ -711,12 +712,14 @@ contract FeeCollector is ReentrancyGuard, AccessControlBase, IFeeCollector {
 	 * @param _amount amount of the token collected by wager in this (FeeCollector contract)
 	 */
 	function _setAmountsForWager(uint256 _amount) internal {
-		reserves.staking += calculateDistribution(_amount, wagerDistributionConfig.staking);
-		reserves.buybackAndBurn += calculateDistribution(
-			_amount,
-			wagerDistributionConfig.buybackAndBurn
-		);
-		reserves.core += calculateDistribution(_amount, wagerDistributionConfig.core);
+    	uint256 forStaking = calculateDistribution(_amount, wagerDistributionConfig.staking);
+    	reserves.staking += forStaking;
+    	uint256 forBuybackAndBurn = calculateDistribution(
+        	_amount,
+        	wagerDistributionConfig.buybackAndBurn
+    	);
+    	reserves.buybackAndBurn += forBuybackAndBurn;
+    	reserves.core += _amount - forStaking - forBuybackAndBurn;
 	}
 
 	/**

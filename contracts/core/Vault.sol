@@ -23,7 +23,7 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 	uint128 private constant MAX_WAGER_FEE = (15 * 1e16); // 15% | Scaling: 1e18 = 100% - 1e17 = 10% - 1e16 = 1%
 
 	/*==================== State Variables *====================*/
-	bool public override isInitialized;
+	// bool public override isInitialized;
 	bool public override isSwapEnabled = true;
 	bool public override hasDynamicFees = false;
 	bool public override inManagerMode = false;
@@ -31,7 +31,7 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 	bool private circuitBreakerEnabled = false;
 
 	IVaultUtils public vaultUtils;
-	address public override router;
+	// address public override router;
 	address public override priceOracleRouter;
 	address public immutable override usdw;
 
@@ -82,15 +82,10 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 	constructor(
 		address _vaultRegistry,
 		address _timelock,
-		address _usdw
+		address _usdw,
+		address _priceOracleRouter
 	) AccessControlBase(_vaultRegistry, _timelock) {
 		usdw = _usdw;
-	}
-
-	function initialize(address _router, address _priceOracleRouter) external onlyGovernance {
-		_validate(!isInitialized, 1);
-		isInitialized = true;
-		router = _router;
 		priceOracleRouter = _priceOracleRouter;
 	}
 
@@ -100,154 +95,80 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 	 * @notice function that collects the escrowerd tokens and pays out recipients based on info passed in by the VaultManager
 	 * @dev function can only be called by the vaultmanager contract
 	 * note: one of the most important contracts as it handles payouts to players
-	 * @param _tokens [0] is the wagerToken(coming into the contract), [1] is the payout token (leaving the contract)
+	 * @param _wagerAsset is the wagerToken(coming into the contract)
 	 * @param _escrowAddress the address where the escrowed wager is held (generally vaultManager address)
 	 * @param _escrowAmount the amount of _tokens[0] held in escrow
 	 * @param _recipient the address the _tokens[1] will be sent to
 	 * @param _totalAmount total value of _tokens[1] the _recipient will receive (with fees deducted) - note that _totalAmount is denominated in _tokens[0].
 	 */
 	function payout(
-		address[2] calldata _tokens,
+		address _wagerAsset,
 		address _escrowAddress,
 		uint256 _escrowAmount,
 		address _recipient,
 		uint256 _totalAmount
-	) external nonReentrant protocolNotPaused {
+	) external override nonReentrant protocolNotPaused {
+		_payout(_wagerAsset, _escrowAddress, _escrowAmount, _recipient, _totalAmount, true /** fromEscrow */);
+	}
+
+	function payoutNoEscrow(
+		address _wagerAsset,
+		address _recipient,
+		uint256 _totalAmount
+	) external override nonReentrant protocolNotPaused {
+		_payout(_wagerAsset, address(0), 0, _recipient, _totalAmount, false /** fromEscrow */);
+	}
+
+	function _payout(
+		address _wagerAsset,
+		address _escrowAddress,
+		uint256 _escrowAmount,
+		address _recipient,
+		uint256 _totalAmount,
+		bool _fromEscrow
+	) internal {
 		_validate(isVaultManager[_msgSender()], 13);
 		_validate(!payoutsHalted, 19);
 		_validate(_totalAmount != 0, 10);
-		_validate(_escrowAmount != 0, 16);
-		_validate(_whitelistedTokens[_tokens[0]], 9);
-		_validate(_whitelistedTokens[_tokens[1]], 9);
-		// withdraw the escrowed tokens from the vaultmanager contract
-		IVaultManager(_escrowAddress).getEscrowedTokens(_tokens[0], _escrowAmount);
-		// collect the wager fees, charged in the wager token _tokens[0] over _escrowAmount
-		(uint256 amountAfterWagerFee_, uint256 wagerFeeCharged_) = _collectWagerFees(
-			_tokens[0],
-			_escrowAmount
-		);
-		/**
-		 * Accounting rules post payout (called by the VRF resolution) - SAME ASSET PAYOUT:
-		 * - The wager fee is charged over the incoming asset (the wagerAsset, _tokens[0]) this value comes from the escrowAmount (the wager is held in escrow during the game while awaiting the VRF result)
-		 * - The wagerFeeCharged_ cost is beared by the vault (so it comes out of the poolAmounts or the WLPs 'equity')
-		 * - The player has won the _totalAmount this is denominated in the wagerAsset (so in _tokens[0])
-		 * - If the player has decided he wants to win the same asset, the player (_recipient) will receive the _totalAmount without any deduction (for this flow see the first if statement _tokens[0] == _tokens[1])
-		 *
-		 * note: the wager fee is charged over the incoming asset (the wagerAsset, _tokens[0])
-		 */
-
-		uint256 _amountNetDifference;
-		if (_tokens[0] == _tokens[1]) {
-			// wagerAsset in, is the same as winAsset
-			uint256 _totalForVault;
-			unchecked {
-				_totalForVault = (_totalAmount + wagerFeeCharged_);
-			}
-			if (_escrowAmount <= _totalForVault) {
-				unchecked {
-					// calculate how much the vault lost on net
-					_amountNetDifference = (_totalForVault - _escrowAmount);
-					// decrease the net amount the WLP has to pay from the pool amounts
-					totalOut_[_tokens[0]] += _amountNetDifference;
-				}
-				_decreasePoolAmount(_tokens[0], _amountNetDifference);
-			} else {
-				// the vault made a profit!
-				unchecked {
-					_amountNetDifference = (_escrowAmount - _totalForVault);
-					totalIn_[_tokens[0]] += _amountNetDifference;
-				}
-				_increasePoolAmount(_tokens[0], _amountNetDifference);
-			}
-			_payoutPlayer(
-				_tokens[0], // _addressTokenOut (same as _tokens[1])
-				_totalAmount,
-				_recipient // _recipient (player address)
+		uint256 wagerFeeCharged_;
+		if(_fromEscrow) {
+			_validate(_escrowAmount != 0, 16);
+			_validate(_whitelistedTokens[_wagerAsset], 9);
+			// withdraw the escrowed tokens from the vaultmanager contract
+			IVaultManager(_escrowAddress).getEscrowedTokens(_wagerAsset, _escrowAmount);
+			// collect the wager fees, charged in the wager token _tokens[0] over _escrowAmount
+			(, wagerFeeCharged_) = _collectWagerFees(
+				_wagerAsset,
+				_escrowAmount
 			);
-			return;
-		} else {
-			// token in, is different from token out, the player wants the totalAmount in a different asset, so we need to swap in this scenario
-			uint256 totalAmountOut_ = _amountOfTokenForToken(
-				_tokens[0],
-				_tokens[1],
-				_totalAmount
-			);
-			// note the player wants to receive the winnings in _tokens[1], the _totalAmount is denominated in _tokens[0] so before we proceed we need to calculate how much _totalAmount is in _tokens[1].
-			if (totalAmountOut_ == 0) {
-				// the player has effectively won nothing converted into _tokens[1]
-				_increasePoolAmount(_tokens[0], amountAfterWagerFee_);
-				unchecked {
-					totalIn_[_tokens[0]] += amountAfterWagerFee_;
-				}
-				// sync the tokenbalance of the vault, as the wagerAsset now sits in this contract and we are not doing a _playerPayout
-				_updateTokenBalance(_tokens[0]);
-				emit AmountOutNull();
-				emit PlayerPayout(_recipient, _tokens[1], 0);
-				return; // function stops as there is nothing to pay out!
-			}
-			// note swap fees are paid to the feecollector in the outgoing token (so _tokens[1])
-			(uint256 amountOutAfterSwap_, uint256 feesPaidInOut_) = _swap(
-				_tokens[0],
-				_tokens[1],
-				address(this),
-				_escrowAmount,
-				true
-			);
-			/**
-			 * Accounting rules post payout (called by the VRF resolution) - DIFFERENT ASSET PAYOUT:
-			 * - The wager fee is charged over the incoming asset (the wagerAsset, _tokens[0]) and paid to the feecollector
-			 * - The vault swaps the entire _escowAmount (this to maximize the swapFee the vault can generate) - due to this in a payout where the vault has made a loss, the vault will decrease its poolAmount of both tokens[0] and tokens[1]
-			 * - UNLIKE the wagerFee the swapFee is paid by the player (the player pays the swapFee in the outgoing token, _tokens[1])
-			 *
-			 * Main think to note is that the swapFee is paid for by the player, so the player will receive less than the _totalAmount. The swap fee is NOT A COST for the vault like the wagerFee is - but it does mean that the vault will receive less assets that go towarwards it equity.
-			 */
-
-			// the vault has paid the wagerFeeCharged_ in _tokens[0] so we need to update the pool amounts
-			_decreasePoolAmount(_tokens[0], wagerFeeCharged_);
-			unchecked {
-				// update totalOut for the _tokens[0] wagerFee the vault has paid
-				totalOut_[_tokens[0]] += wagerFeeCharged_;
-			}
-			_updateTokenBalance(_tokens[0]);
-			if (totalAmountOut_ >= amountOutAfterSwap_) {
-				// vault has made a loss
-				unchecked {
-					_amountNetDifference = (totalAmountOut_ -
-						amountOutAfterSwap_);
-					totalOut_[_tokens[1]] += _amountNetDifference;
-				}
-				// we register the loss with the pool balances
-				_decreasePoolAmount(_tokens[1], _amountNetDifference);
-			} else {
-				// vault has made a profit
-				unchecked {
-					_amountNetDifference = (amountOutAfterSwap_ -
-						totalAmountOut_);
-					totalIn_[_tokens[1]] += _amountNetDifference;
-				}
-				// we register the profit with the pool balances
-				_increasePoolAmount(_tokens[1], _amountNetDifference);
-				if (feesPaidInOut_ >= totalAmountOut_) {
-					// if the feesPaidInOut_ is larger as the totalAmountOut_, the player is not receiving anything
-					_updateTokenBalance(_tokens[1]);
-					// correct the subtracted totalAmountOut_ since it is owned by the vault
-					_increasePoolAmount(_tokens[1], totalAmountOut_);
-					unchecked {
-						totalIn_[_tokens[1]] += totalAmountOut_;
-					}
-					// since _payoutPlayer is not reached, emit event for null payout
-					emit PlayerPayout(_recipient, _tokens[1], 0);
-					return;
-				}
-			}
-			// note: the swapFee stays in the Vault  (for now) however it is not part of the WLP anymore! the _swap function has already done the _updateTokenBalance so we do not need to do that anymore
-			_payoutPlayer(
-				_tokens[1],
-				(totalAmountOut_ - feesPaidInOut_), // feesPaidInOut_ cannot be larger as because otherwise it would already have returned because of the previous if/else/if statement
-				_recipient
-			);
-			return;
 		}
+		uint256 _totalForVault;
+		unchecked {
+			_totalForVault = (_totalAmount + wagerFeeCharged_);
+		}
+		uint256 _amountNetDifference;
+		if (_escrowAmount <= _totalForVault) {
+			unchecked {
+				// calculate how much the vault lost on net
+				_amountNetDifference = (_totalForVault - _escrowAmount);
+				// decrease the net amount the WLP has to pay from the pool amounts
+				totalOut_[_wagerAsset] += _amountNetDifference;
+			}
+			_decreasePoolAmount(_wagerAsset, _amountNetDifference);
+		} else {
+			// the vault made a profit!
+			unchecked {
+				_amountNetDifference = (_escrowAmount - _totalForVault);
+				totalIn_[_wagerAsset] += _amountNetDifference;
+			}
+			_increasePoolAmount(_wagerAsset, _amountNetDifference);
+		}
+		_payoutPlayer(
+			_wagerAsset, // _addressTokenOut 
+			_totalAmount,
+			_recipient // _recipient (player address)
+		);
+		return;
 	}
 
 	/**
@@ -262,7 +183,7 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 		address _inputToken,
 		address _escrowAddress,
 		uint256 _escrowAmount
-	) external nonReentrant protocolNotPaused {
+	) external override nonReentrant protocolNotPaused {
 		_validate(isVaultManager[_msgSender()], 13);
 		_validate(_whitelistedTokens[_inputToken], 9);
 		_validate(_escrowAmount != 0, 16);
@@ -290,13 +211,63 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 	 */
 	function directPoolDeposit(
 		address _tokenIn
-	) external override protocolNotPaused onlyManager {
+	) external override protocolNotPaused onlyTeam {
 		require(IERC20(usdw).totalSupply() != 0, "Vault: USDW supply 0");
 		_validate(_whitelistedTokens[_tokenIn], 9);
 		uint256 tokenAmount_ = _transferIn(_tokenIn);
 		_validate(tokenAmount_ != 0, 10);
 		_increasePoolAmount(_tokenIn, tokenAmount_);
 		emit DirectPoolDeposit(_tokenIn, tokenAmount_);
+	}
+
+
+	/**
+	 * @notice function that adds a whitelisted asset to the pool, and adds the amount to the wagerFeeReserves
+	 * @dev the tokens need to be transferred to the vault before calling this function
+	 * @param _tokenIn address of the token to directly deposit into the pool and added to the wagerFeeReserves
+	 */
+	function payinWagerFee(
+		address _tokenIn
+	) external override onlyProtocol nonReentrant {
+		_validate(_whitelistedTokens[_tokenIn], 9);
+		uint256 tokenAmount_ = _transferIn(_tokenIn);
+		_validate(tokenAmount_ != 0, 10);
+		unchecked {
+			wagerFeeReserves[_tokenIn] += tokenAmount_;
+		}
+	}
+
+	/**
+	 * @notice function that adds a whitelisted asset to the pool, and adds the amount to the swapFeeReserves
+	 * @dev the tokens need to be transferred to the vault before calling this function
+	 * @param _tokenIn address of the token to directly deposit into the pool and added to the swapFeeReseres
+	 */
+	function payinSwapFee(
+		address _tokenIn
+	) external override onlyProtocol nonReentrant {
+		_validate(_whitelistedTokens[_tokenIn], 9);
+		uint256 tokenAmount_ = _transferIn(_tokenIn);
+		_validate(tokenAmount_ != 0, 10);
+		unchecked {
+			swapFeeReserves[_tokenIn] += tokenAmount_;
+		}
+	}
+
+	/**
+	 * @notice function that adds a whitelisted asset to the pool, and adds the amount to the WLP funds
+	 * @dev the tokens need to be transferred to the vault before calling this function
+	 * @param _tokenIn address of the token to directly deposit into the pool
+	 */
+	function payinPoolProfits(
+		address _tokenIn
+	) external override onlyProtocol nonReentrant {
+		_validate(_whitelistedTokens[_tokenIn], 9);
+		uint256 tokenAmount_ = _transferIn(_tokenIn);
+		_validate(tokenAmount_ != 0, 10);
+		_increasePoolAmount(_tokenIn, tokenAmount_);
+		unchecked {
+			totalIn_[_tokenIn] += tokenAmount_;
+		}
 	}
 
 	/**
@@ -387,7 +358,8 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 	 */
 	function deposit(
 		address _tokenIn,
-		address _receiverUSDW
+		address _receiverUSDW,
+		bool _swapLess
 	) external override protocolNotPaused nonReentrant returns (uint256 mintAmountUsdw_) {
 		_validateManager();
 		_validate(_whitelistedTokens[_tokenIn], 9);
@@ -407,6 +379,11 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 			_tokenIn,
 			usdwAmount_
 		);
+
+		if(_swapLess) {
+			feeBasisPoints_ = 0;
+		}
+
 		// note: the swapfee is charged in the incoming token (so in _tokenIn)
 		(uint256 amountOutAfterFees_, ) = _collectSwapFees(
 			_tokenIn,
@@ -609,8 +586,9 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 	) private returns (uint256 amountAfterWagerFee_, uint256 wagerFeeCharged_) {
 		// using 1e18 scaling or wagerFee -  Scaling: 1e18 = 100% - 1e17 = 10% - 1e16 = 1%
 		amountAfterWagerFee_ = ((_amountEscrow * (1e18 - wagerFeeBasisPoints)) / 1e18);
-		wagerFeeCharged_ = _amountEscrow - amountAfterWagerFee_;
 		unchecked {
+			// amountAfterWagerFee_ cannot be larger as _amountEscrow is maximum 15%
+			wagerFeeCharged_ = _amountEscrow - amountAfterWagerFee_; 
 			wagerFeeReserves[_tokenEscrowIn] += wagerFeeCharged_;
 		}
 		return (amountAfterWagerFee_, wagerFeeCharged_);
@@ -893,7 +871,7 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 	function usdToTokenMax(
 		address _tokenToPrice,
 		uint256 _usdAmount
-	) external view returns (uint256 tokenAmountMax_) {
+	) external override view returns (uint256 tokenAmountMax_) {
 		// using the lower price bound of the asset
 		tokenAmountMax_ = usdToToken(_tokenToPrice, _usdAmount, getMinPrice(_tokenToPrice));
 	}
@@ -908,7 +886,7 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 	function usdToTokenMin(
 		address _tokenToPrice,
 		uint256 _usdAmount
-	) external view returns (uint256 tokenAmountMin_) {
+	) external override view returns (uint256 tokenAmountMin_) {
 		tokenAmountMin_ = usdToToken(_tokenToPrice, _usdAmount, getMaxPrice(_tokenToPrice));
 	}
 
@@ -924,7 +902,7 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 		address _token,
 		uint256 _usdAmount,
 		uint256 _priceToken
-	) public view returns (uint256 tokenAmount_) {
+	) public override view returns (uint256 tokenAmount_) {
 		uint256 decimals_ = tokenDecimals[_token];
 		tokenAmount_ = ((_usdAmount * (10 ** decimals_)) / _priceToken);
 	}
@@ -953,7 +931,7 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 	 */
 	function returnTotalOutAndIn(
 		address token_
-	) external view returns (uint256 totalOutAllTime_, uint256 totalInAllTime_) {
+	) external override view returns (uint256 totalOutAllTime_, uint256 totalInAllTime_) {
 		return (totalOut_[token_], totalIn_[token_]);
 	}
 
@@ -971,7 +949,7 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 	/**
 	 * @notice returns the USD(scaled 1e30) value of 1 WLP token
 	 */
-	function getWlpValue() external view returns (uint256 wlpValue_) {
+	function getWlpValue() external override view returns (uint256 wlpValue_) {
 		wlpValue_ = IWLPManager(wlpManagerAddress).getPriceWlp(false);
 	}
 
@@ -1039,7 +1017,7 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 		address _token,
 		uint256 _amount,
 		bool _upgrade
-	) external onlyTimelockGovernance {
+	) external override onlyTimelockGovernance {
 		IERC20(_token).transfer(_newVault, _amount);
 		if (_upgrade) {
 			_decreasePoolAmount(_token, _amount);
@@ -1051,7 +1029,7 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 	 * @notice function that changes the feecollector contract
 	 * @param _feeCollector address of the (new) feecollector
 	 */
-	function setFeeCollector(address _feeCollector) external onlyTimelockGovernance {
+	function setFeeCollector(address _feeCollector) external override onlyTimelockGovernance {
 		feeCollector = _feeCollector;
 	}
 
@@ -1081,7 +1059,7 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 	 * @param _token address of the token to set the cb for
 	 * @param _amount trigger amount of the cb in units of the token
 	 */
-	function setCircuitBreakerAmount(address _token, uint256 _amount) external onlyManager {
+	function setCircuitBreakerAmount(address _token, uint256 _amount) external override onlyTeam {
 		circuitBreakerAmounts[_token] = _amount;
 	}
 
@@ -1156,7 +1134,7 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 	 * @notice function that deletes the configuration of a certain token
 	 * @param _token address of the token
 	 */
-	function clearTokenConfig(address _token) external onlyGovernance {
+	function clearTokenConfig(address _token) external override onlyGovernance {
 		_validate(allWhitelistedTokensSet.contains(_token), 9);
 		totalTokenWeights -= tokenWeights[_token];
 		allWhitelistedTokensSet.remove(_token);
@@ -1172,7 +1150,7 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 	 * @dev this function should be called in cases where for some reason tokens end up on the contract
 	 * @param _token address of the token to be updated
 	 */
-	function updateTokenBalance(address _token) external onlyEmergency {
+	function updateTokenBalance(address _token) external override onlyEmergency {
 		_updateTokenBalance(_token);
 	}
 
@@ -1189,7 +1167,7 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 	 * @notice function that flips if the vault performs payouts or not
 	 * @param _setting what to flip the payoutsHalted to
 	 */
-	function setPayoutHalted(bool _setting) external onlyEmergency {
+	function setPayoutHalted(bool _setting) external override onlyEmergency {
 		payoutsHalted = _setting;
 	}
 
@@ -1204,15 +1182,14 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 	 * @param _errorCode uint pointing to a certain error code
 	 * @param _error string of new error code
 	 */
-	function setError(uint256 _errorCode, string calldata _error) external override {
-		_validate(!isInitialized, 1);
+	function setError(uint256 _errorCode, string calldata _error) external override onlyProtocol {
 		errors[_errorCode] = _error;
 	}
 
 	function setAsideReferral(
 		address _token,
 		uint256 _amountSetAside
-	) external override onlyManager {
+	) external override onlyProtocol {
 		unchecked {
 			referralReserves[_token] += _amountSetAside;
 		}
@@ -1221,22 +1198,20 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 	function removeAsideReferral(
 		address _token,
 		uint256 _amountRemoveAside
-	) external override onlyManager {
+	) external override onlyProtocol {
 		if (referralReserves[_token] >= _amountRemoveAside) {
-			referralReserves[_token] -= _amountRemoveAside;
+			unchecked {
+				referralReserves[_token] -= _amountRemoveAside;
+			}
 		}
 	}
 
-	function setRouter(address _router) external onlyGovernance {
-		router = _router;
-	}
-
-	/*==================== Configuration functions Economic (onlyGovernance / onlyManager) *====================*/
+	/*==================== Configuration functions Economic (onlyGovernance) *====================*/
 
 	/**
 	 * @notice enables circuit breaker mechanism
 	 */
-	function setCircuitBreakerEnabled(bool _setting) external onlyManager {
+	function setCircuitBreakerEnabled(bool _setting) external override onlyTeam {
 		circuitBreakerEnabled = _setting;
 	}
 
@@ -1244,7 +1219,7 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 	 * @notice configuration function to set the amount of wagerFees
 	 * @param _wagerFee uint configuration for the wagerfee
 	 */
-	function setWagerFee(uint256 _wagerFee) external override onlyManager {
+	function setWagerFee(uint256 _wagerFee) external override onlyProtocol {
 		require(_wagerFee <= MAX_WAGER_FEE, "Vault: Wagerfee exceed maximum");
 		wagerFeeBasisPoints = _wagerFee;
 		emit WagerFeeChanged(_wagerFee);
@@ -1302,7 +1277,7 @@ contract Vault is ReentrancyGuard, AccessControlBase, IVault {
 	 * @param _token address of the token
 	 * @param _amount amount to configure in poolAmounts
 	 */
-	function setPoolBalance(address _token, uint256 _amount) external onlyGovernance {
+	function setPoolBalance(address _token, uint256 _amount) external override onlyGovernance {
 		poolAmounts[_token] = _amount;
 	}
 }

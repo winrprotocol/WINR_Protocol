@@ -4,16 +4,13 @@ pragma solidity 0.8.19;
 
 import "../interfaces/core/IVault.sol";
 import "../interfaces/core/IVaultUtils.sol";
-import "./AccessControlBase.sol";
 
-contract VaultUtils is IVaultUtils, AccessControlBase {
+contract VaultUtils is IVaultUtils {
 	IVault public immutable vault;
 
 	constructor(
-		address _vault,
-		address _vaultRegistry,
-		address _timelock
-	) AccessControlBase(_vaultRegistry, _timelock) {
+		address _vault
+	) {
 		vault = IVault(_vault);
 	}
 
@@ -162,10 +159,8 @@ contract VaultUtils is IVaultUtils, AccessControlBase {
 			}
 			// IMO nextAmount cannot be 0 realistically, it is merely there to prevent underflow
 		} else {
-			unchecked {
-				// calculate how much the debt will be
-				nextAmount_ = (initialAmount_ + _usdwDelta);
-			}
+			// calculate how much the debt will be
+			nextAmount_ = (initialAmount_ + _usdwDelta);
 		}
 		// fetch how much usdw debt the token should be in optimally balanced state
 		uint256 targetAmount_ = vault.getTargetUsdwAmount(_token);

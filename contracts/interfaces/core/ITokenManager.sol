@@ -20,7 +20,7 @@ interface ITokenManager {
 
 	function mintOrTransferByPool(address _to, uint256 _amount) external;
 
-	function mintVestedWINR(address _input, uint256 _amount, address _recipient) external;
+	function mintVestedWINR(address _input, uint256 _amount, address _recipient) external returns(uint256 _mintAmount);
 
 	function mintedByGames() external returns (uint256);
 

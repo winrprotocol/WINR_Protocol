@@ -69,15 +69,11 @@ interface IVault {
 	/*==================== Operational Functions *====================*/
 	function setPayoutHalted(bool _setting) external;
 
-	function isInitialized() external view returns (bool);
-
 	function isSwapEnabled() external view returns (bool);
 
 	function setVaultUtils(IVaultUtils _vaultUtils) external;
 
 	function setError(uint256 _errorCode, string calldata _error) external;
-
-	function router() external view returns (address);
 
 	function usdw() external view returns (address);
 
@@ -129,7 +125,7 @@ interface IVault {
 
 	function directPoolDeposit(address _token) external;
 
-	function deposit(address _tokenIn, address _receiver) external returns (uint256);
+	function deposit(address _tokenIn, address _receiver, bool _swapLess) external returns (uint256);
 
 	function withdraw(address _tokenOut, address _receiverTokenOut) external returns (uint256);
 
@@ -216,16 +212,56 @@ interface IVault {
 	) external view returns (uint256 totalOutAllTime_, uint256 totalInAllTime_);
 
 	function payout(
-		address[2] calldata _tokens,
+		address _wagerToken,
 		address _escrowAddress,
 		uint256 _escrowAmount,
 		address _recipient,
 		uint256 _totalAmount
 	) external;
 
-	function payin(address _inputToken, address _escrowAddress, uint256 _escrowAmount) external;
+	function payoutNoEscrow(
+		address _wagerAsset,
+		address _recipient,
+		uint256 _totalAmount
+	) external;
+
+	function payin(
+		address _inputToken, 
+		address _escrowAddress,
+		uint256 _escrowAmount) external;
 
 	function setAsideReferral(address _token, uint256 _amount) external;
 
+	function payinWagerFee(
+		address _tokenIn
+	) external;
+
+	function payinSwapFee(
+		address _tokenIn
+	) external;
+
+	function payinPoolProfits(
+		address _tokenIn
+	) external;
+
 	function removeAsideReferral(address _token, uint256 _amountRemoveAside) external;
+
+	function setFeeCollector(address _feeCollector) external;
+
+	function upgradeVault(
+		address _newVault,
+		address _token,
+		uint256 _amount,
+		bool _upgrade
+	) external;
+
+	function setCircuitBreakerAmount(address _token, uint256 _amount) external;
+
+	function clearTokenConfig(address _token) external;
+
+	function updateTokenBalance(address _token) external;
+
+	function setCircuitBreakerEnabled(bool _setting) external;
+
+	function setPoolBalance(address _token, uint256 _amount) external;
 }

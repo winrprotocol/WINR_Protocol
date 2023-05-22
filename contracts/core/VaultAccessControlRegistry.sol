@@ -7,9 +7,11 @@ import "../interfaces/core/IVaultAccessControlRegistry.sol";
 
 contract VaultAccessControlRegistry is IVaultAccessControlRegistry, AccessControl, Pausable {
 	/*==================== Constants *====================*/
-	bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
 	bytes32 public constant GOVERANCE_ROLE = keccak256("GOVERANCE_ROLE");
 	bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
+	bytes32 public constant PROTOCOL_ROLE = keccak256("PROTOCOL_ROLE");
+	bytes32 public constant TEAM_ROLE = keccak256("TEAM_ROLE");
+	bytes32 public constant SUPPORT_ROLE = keccak256("SUPPORT_ROLE");
 
 	/*==================== State Variabes *====================*/
 	address public immutable timelockAddressImmutable;
@@ -19,16 +21,25 @@ contract VaultAccessControlRegistry is IVaultAccessControlRegistry, AccessContro
 	constructor(address _governance, address _timelock) Pausable() {
 		governanceAddress = _governance;
 		timelockAddressImmutable = _timelock;
+		
 		_setupRole(GOVERANCE_ROLE, _governance);
-		_setupRole(MANAGER_ROLE, _governance);
 		_setupRole(EMERGENCY_ROLE, _governance);
+		_setupRole(SUPPORT_ROLE, _governance);
+		_setupRole(TEAM_ROLE, _governance);
+		_setupRole(PROTOCOL_ROLE, _governance);
+
 		_setRoleAdmin(GOVERANCE_ROLE, GOVERANCE_ROLE);
-		_setRoleAdmin(MANAGER_ROLE, GOVERANCE_ROLE);
+		_setRoleAdmin(PROTOCOL_ROLE, GOVERANCE_ROLE);
+		_setRoleAdmin(SUPPORT_ROLE, GOVERANCE_ROLE);
+		_setRoleAdmin(TEAM_ROLE, GOVERANCE_ROLE);
 		_setRoleAdmin(EMERGENCY_ROLE, GOVERANCE_ROLE);
 	}
 
 	/*==================== One-time functions *====================*/
 
+	/**
+	 * To ensure that right after deployment the governance enitity is able to make configuration changes we use a switch mechanism. After the switch is flipped, the governance entity can no longer flip it back. After this point all function protected by the onlyTimelockGovernance modifier can be called after the timelock period has passed.
+	 */
 	function flipTimelockDeadmanSwitch() external onlyRole(GOVERANCE_ROLE) {
 		require(
 			!timelockActivated,
@@ -73,22 +84,49 @@ contract VaultAccessControlRegistry is IVaultAccessControlRegistry, AccessContro
 
 	/*==================== View functions *====================*/
 
+	/**
+	 * 
+	 */
 	function isCallerGovernance(
 		address _account
 	) external view whenNotPaused returns (bool isGovernance_) {
 		isGovernance_ = hasRole(GOVERANCE_ROLE, _account);
 	}
 
-	function isCallerManager(
-		address _account
-	) external view whenNotPaused returns (bool isManager_) {
-		isManager_ = hasRole(MANAGER_ROLE, _account);
-	}
-
+	/**
+	 * @dev the emergency role can only pause functions/the protocol - it is meant to be held by trusted entities that are distributed geographically
+	 */
 	function isCallerEmergency(
 		address _account
 	) external view whenNotPaused returns (bool isEmergency_) {
 		isEmergency_ = hasRole(EMERGENCY_ROLE, _account);
+	}
+
+	/**
+	 * @dev any address that is assigned the protocol should be a smart contract (no EAO allowed)
+	 */
+	function isCallerProtocol(
+		address _account
+	) external view whenNotPaused returns (bool isProtocol_) {
+		isProtocol_ = hasRole(PROTOCOL_ROLE, _account);
+	}
+
+	/**
+	 * @dev the team role is only assigned to entities that are highly trusted, a key holder cannot use hotkeys (only cold wallets)
+	 */
+	function isCallerTeam(
+		address _account
+	) external view whenNotPaused returns (bool isTeam_) {
+		isTeam_ = hasRole(TEAM_ROLE, _account);
+	}
+
+	/**
+	 * @dev the support role is the lowest level of access, it can only configure non-valueble configurations like referral tiers 
+	 */
+	function isCallerSupport(
+		address _account
+	) external view whenNotPaused returns (bool isSupport_) {
+		isSupport_ = hasRole(SUPPORT_ROLE, _account);
 	}
 
 	function isProtocolPaused() external view returns (bool isPaused_) {

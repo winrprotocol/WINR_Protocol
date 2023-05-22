@@ -8,7 +8,7 @@ import "../../interfaces/core/ITokenManager.sol";
 import "../../interfaces/tokens/IWINR.sol";
 import "../../interfaces/stakings/IWINRStaking.sol";
 
-contract WINRVesting is IWINRStaking, Pausable, ReentrancyGuard, AccessControlBase {
+abstract contract WINRVesting is IWINRStaking, Pausable, ReentrancyGuard, AccessControlBase {
 	/*====================================================== Modifiers ===========================================================*/
 	/**
 	 * @notice Throws if the amount is not greater than zero
@@ -46,7 +46,7 @@ contract WINRVesting is IWINRStaking, Pausable, ReentrancyGuard, AccessControlBa
 	mapping(address => uint256) public totalClaimed;
 	//Initializes default vesting period
 	Period public period = Period(180 days, 15 days, 165, 5e17);
-	//IInitializes default reward multipliers
+	//Initializes default reward multipliers
 	WeightMultipliers public weightMultipliers = WeightMultipliers(1, 2, 1);
 
 	/*==================================================== Constructor ===========================================================*/
@@ -90,6 +90,7 @@ contract WINRVesting is IWINRStaking, Pausable, ReentrancyGuard, AccessControlBa
 	) external view returns (uint256 pending) {
 		// Get the stake from the stakes mapping
 		StakeVesting memory stake = stakes[account][index];
+		if(stake.withdrawn || stake.cancelled) return 0;
 		// Calculate the pending reward for the stake
 		pending = _pendingWLPOfStake(stake);
 	}
@@ -207,7 +208,7 @@ contract WINRVesting is IWINRStaking, Pausable, ReentrancyGuard, AccessControlBa
 	 * @return holderProfit The pending WLP amount.
 	 */
 	function _pendingWLPOfStake(StakeVesting memory stake) internal view returns (uint256) {
-		// Compute the holder's profit as the product of their stake's weight and the accumulated profit per weight.
+	// Compute the holder's profit as the product of their stake's weight and the accumulated profit per weight.
 		uint256 holderProfit = ((stake.weight * accumProfitPerWeight) / PRECISION);
 		// If the holder's profit is less than their profit debt, return zero.
 		return holderProfit < stake.profitDebt ? 0 : holderProfit - stake.profitDebt;
@@ -260,66 +261,60 @@ contract WINRVesting is IWINRStaking, Pausable, ReentrancyGuard, AccessControlBa
 	/**
 	 * @dev This function cancels vesting stakes without penalty and reward.
 	 * It sends the staked amount to the staker.
-	 * @param index index to cancel vesting for
+	 * @param _index index to cancel vesting for
 	 * @notice Throws an error if the stake has already been withdrawn
 	 * @notice Emits a Cancel event upon successful execution
 	 */
-	function cancel(uint256 index) external {
+	function cancel(uint256 _index) external {
 		// Get the address of the caller
-		address sender = msg.sender;
-
+		address sender_ = msg.sender;
 		// Declare local variables for stake and bool values
 		StakeVesting memory stake;
+		
 
 		// Retrieve the stake and bool values for the given index and staker
-		(stake) = getVestingStake(sender, index);
+		(stake) = getVestingStake(sender_, _index);
 
 		// Check if the stake has already been withdrawn
 		require(!stake.withdrawn, "stake has withdrawn");
+		// Check if the stake has already been cancelled
+		require(!stake.cancelled, "stake has cancelled");
 
 		// Remove the index from the staker's active stakes list
-		_removeActiveIndex(sender, index);
+		_removeActiveIndex(sender_, _index);
 
 		uint256 amount_ = stake.amount;
 
-		// Mark the stake as cancelled in the mapping
-		stakes[sender][index].cancelled = true;
 
 		// Calculate the amount of tokens to burn and the amount of tokens to send to the staker
 		uint256 burnAmount_ = _computeBurnAmount(amount_);
 		uint256 sendAmount_ = amount_ - burnAmount_;
 		totalStakedVestedWINR -= amount_;
+		totalWeight -= stake.weight;
+		// claim rewards
+		uint256 reward_ = _pendingWLPOfStake(stake);
+
+		// share rewards with the pool
+		if(reward_ > 0) {
+			// Update the accumulated profit per weight
+			accumProfitPerWeight += (reward_ * PRECISION) / totalWeight;
+			// Update the holder's profit debt
+			stakes[sender_][_index].profitDebt += reward_;
+		}
+		// Mark the stake as cancelled in the mapping
+		stakes[sender_][_index].cancelled = true;
+		stakes[sender_][_index].amount = 0;
 
 		// Send the staked tokens to the staker
-		tokenManager.sendVestedWINR(sender, sendAmount_);
+		tokenManager.sendVestedWINR(sender_, sendAmount_);
 
 		// Burn the remaining vesting tokens
 		tokenManager.burnVestedWINR(burnAmount_);
 
 		// Emit a Cancel event to notify listeners of the cancellation
-		emit Cancel(sender, block.timestamp, index, burnAmount_, sendAmount_);
+		emit Cancel(sender_, block.timestamp, _index, burnAmount_, sendAmount_);
 	}
 
-	/**
-	 * @dev Set the weight multipliers for each type of stake. Only callable by the governance address.
-	 * @param _weightMultipliers Multiplier per weight for each type of stake
-	 * @notice Emits a WeightMultipliersUpdate event upon successful execution
-	 */
-	function setWeightMultipliers(
-		WeightMultipliers memory _weightMultipliers
-	) external onlyGovernance {
-		require(_weightMultipliers.vWinr != 0, "vWINR dividend multiplier can not be zero");
-		require(
-			_weightMultipliers.vWinrVesting != 0,
-			"vWINR vesting multiplier can not be zero"
-		);
-		require(_weightMultipliers.winr != 0, "WINR multiplier can not be zero");
-		// Set the weight multipliers to the provided values
-		weightMultipliers = _weightMultipliers;
-
-		// Emit an event to notify listeners of the update
-		emit WeightMultipliersUpdate(_weightMultipliers);
-	}
 
 	/**
 	 * @dev Set the percentage of tokens to burn upon unstaking. Only callable by the governance address.
@@ -429,7 +424,7 @@ contract WINRVesting is IWINRStaking, Pausable, ReentrancyGuard, AccessControlBa
 	 * @param _index Index to withdraw
 	 */
 	function withdrawVesting(uint256 _index) external whenNotPaused nonReentrant {
-		address sender_ = _msgSender();
+		address sender_ = msg.sender;
 		// Initialize an array of size 4 to store the amounts
 		StakeVesting storage stake_ = stakes[sender_][_index];
 
@@ -447,7 +442,7 @@ contract WINRVesting is IWINRStaking, Pausable, ReentrancyGuard, AccessControlBa
 		uint256 redeemable_ = _withdrawableByVesting(stake_);
 		// Redeemable WLP amount by stake
 		uint256 reward_ = _pendingWLPOfStake(stake_);
-
+		
 		// Interact with external contracts to complete the withdrawal process
 		if (redeemable_ > 0) {
 			// Mint reward tokens if necessary
@@ -456,7 +451,7 @@ contract WINRVesting is IWINRStaking, Pausable, ReentrancyGuard, AccessControlBa
 
 		uint256 amountToBurn = stake_.amount - redeemable_;
 
-		// Mint WINR tokens to decrease total supply
+		// Mint WINR tokens to decrease MAX_SUPPLY
 		if (amountToBurn > 0) {
 			// this code piece is used to decrease burn amount from WINR total supply
 			tokenManager.mintWINR(address(tokenManager), amountToBurn);
@@ -581,44 +576,42 @@ contract WINRVesting is IWINRStaking, Pausable, ReentrancyGuard, AccessControlBa
 	 * @param indexes Array of the indexes to claim
 	 * @param isClaim Checks if the caller is the claim function
 	 */
-	function _claim(uint256[] calldata indexes, bool isClaim) internal {
-		address sender = msg.sender;
-		uint256 _totalFee;
+	function _claim(uint256[] memory indexes, bool isClaim) internal {
+		address sender_ = msg.sender;
+		uint256 totalFee_;
 
 		// Check
 		for (uint256 i = 0; i < indexes.length; i++) {
-			uint256 index = indexes[i];
+			uint256 index_ = indexes[i];
 
-			StakeVesting memory _stake = getVestingStake(sender, index);
+			StakeVesting storage stake_ = stakes[sender_][index_];
 
 			// Check that the stake has not been withdrawn
 			if (isClaim) {
-				require(!_stake.withdrawn, "Stake has already been withdrawn");
+				require(!stake_.withdrawn, "Stake has already been withdrawn");
 			}
 
 			// Check that the stake has not been cancelled
-			require(!_stake.cancelled, "Stake has been cancelled");
+			require(!stake_.cancelled, "Stake has been cancelled");
 
-			uint256 _fee = _pendingWLPOfStake(_stake);
-			_totalFee += _fee;
+			 uint256 fee_ = _pendingWLPOfStake(stake_);
+			 stake_.profitDebt += fee_;
+			totalFee_ += fee_;
+			 
 		}
-
 		// Effects
-		for (uint256 i = 0; i < indexes.length; i++) {
-			uint256 index = indexes[i];
-			stakes[sender][index].profitDebt += _totalFee;
-		}
 
-		totalProfit -= _totalFee;
-		totalClaimed[sender] += _totalFee;
 
+		totalProfit -= totalFee_;
+		totalClaimed[sender_] += totalFee_;
 		// Interactions
-		if (_totalFee > 0) {
-			tokenManager.sendWLP(sender, _totalFee);
+		if (totalFee_ > 0) {
+			
+			tokenManager.sendWLP(sender_, totalFee_);
 		}
 
 		// Emit event
-		emit ClaimVestingBatch(sender, _totalFee, indexes);
+		emit ClaimVestingBatch(sender_, totalFee_, indexes);
 	}
 
 	/**
@@ -628,24 +621,21 @@ contract WINRVesting is IWINRStaking, Pausable, ReentrancyGuard, AccessControlBa
 	 *  @param index The index of the vesting schedule to remove.
 	 */
 	function _removeActiveIndex(address staker, uint index) internal {
-		uint[] storage indexes;
+		uint[] storage indexes = activeVestingIndexes[staker];
 
-		indexes = activeVestingIndexes[staker];
+    	uint length = indexes.length;
 
-		uint length = indexes.length;
-
-		// Find the index to remove
-		for (uint i = 0; i < length; i++) {
-			if (indexes[i] == index) {
-				// Shift all subsequent elements left by one position
-				for (uint j = i; j < length - 1; j++) {
-					indexes[j] = indexes[j + 1];
-				}
-				// Remove the last element
-				indexes.pop();
-				return;
-			}
-		}
+    	// Find the index to remove
+    	for (uint i = 0; i < length; i++) {
+        	if (indexes[i] == index) {
+            	// Swap with the last element
+            	indexes[i] = indexes[length - 1];
+            
+            	// Remove the last element
+            	indexes.pop();
+            	return;
+        	}
+    	}
 	}
 
 	function _addActiveIndex(address staker, uint256 index) internal {

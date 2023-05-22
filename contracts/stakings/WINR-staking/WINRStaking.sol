@@ -73,7 +73,7 @@ contract WINRStaking is WINRVesting {
 	 * @dev The function can receive Ether and can be called by anyone, but does not modify the state of the contract.
 	 */
 	fallback() external payable {
-		emit Donation(_msgSender(), msg.value);
+		emit Donation(msg.sender, msg.value);
 	}
 
 	/**
@@ -83,27 +83,27 @@ contract WINRStaking is WINRVesting {
 	 * @dev The function can receive Ether and can be called by anyone, but does not modify the state of the contract.
 	 */
 	receive() external payable {
-		emit Donation(_msgSender(), msg.value);
+		emit Donation(msg.sender, msg.value);
 	}
 
 	/**
 	 *
 	 * @dev Distributes a share of profits to all stakers based on their stake weight.
 	 * @param _amount The amount of profits to distribute among stakers.
-	 * @notice The function can only be called by an address with the MANAGER_ROLE.
+	 * @notice The function can only be called by an address with the PROTOCOL_ROLE.
 	 * @notice The total weight of all staked tokens must be greater than zero for profits to be distributed.
 	 * @dev If the total weight of all staked tokens is greater than zero,
 	 *      the function adds the specified amount of profits to the total profit pool
 	 *      and updates the accumulated profit per weight value accordingly.
 	 * @dev The function emits a Share event to notify external systems about the distribution of profits.
 	 */
-	function share(uint256 _amount) external override isAmountNonZero(_amount) onlyManager {
+	function share(uint256 _amount) external override isAmountNonZero(_amount) onlyProtocol {
 		if (totalWeight > 0) {
 			totalProfit += _amount;
 			totalEarned += _amount;
 			accumProfitPerWeight += (_amount * PRECISION) / totalWeight;
 
-			emit Share(_amount, totalWeight);
+			emit Share(_amount, totalWeight, totalStakedVestedWINR, totalStakedWINR);
 		}
 	}
 
@@ -114,14 +114,14 @@ contract WINRStaking is WINRVesting {
 	 *  @notice The function calls the internal function '_claimDividend' passing the caller's address and 'isVested' boolean as parameters.
 	 */
 	function claimDividend() external whenNotPaused nonReentrant {
-		_claimDividendBatch(_msgSender());
+		_claimDividendBatch(msg.sender);
 	}
 
 	/**
 	 * @notice Pauses the contract. Only the governance address can call this function.
 	 * @dev While the contract is paused, some functions may be disabled to prevent unexpected behavior.
 	 */
-	function pause() public onlyGovernance {
+	function pause() public onlyTeam {
 		_pause();
 	}
 
@@ -129,7 +129,7 @@ contract WINRStaking is WINRVesting {
 	 * @notice Unpauses the contract. Only the governance address can call this function.
 	 * @dev Once the contract is unpaused, all functions should be enabled again.
 	 */
-	function unpause() public onlyGovernance {
+	function unpause() public onlyTeam {
 		_unpause();
 	}
 
@@ -191,7 +191,7 @@ contract WINRStaking is WINRVesting {
 		bool _isVested
 	) external isAmountNonZero(_amount) nonReentrant whenNotPaused {
 		// Get the address of the stake owner.
-		address sender_ = _msgSender();
+		address sender_ = msg.sender;
 		// Determine the stake details based on the boolean flag isVested.
 		StakeDividend storage stake_;
 
@@ -239,7 +239,7 @@ contract WINRStaking is WINRVesting {
 	 *    Emit an Unstake event with the details of the unstaked tokens.
 	 */
 	function unstake(uint256 _amount, bool _isVested) external nonReentrant whenNotPaused {
-		address sender_ = _msgSender();
+		address sender_ = msg.sender;
 		StakeDividend storage stake_ = _isVested
 			? dividendVestedWINRStakes[sender_]
 			: dividendWINRStakes[sender_];

@@ -1,46 +1,53 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.19;
 import "../interfaces/tokens/IWINR.sol";
-import "../interfaces/core/ITokenManager.sol";
 import "../interfaces/core/IVault.sol";
 import "../core/AccessControlBase.sol";
-import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import "../interfaces/core/IVault.sol";
 
 contract MiningStrategy is AccessControlBase {
 	/*==================================================== Events =============================================================*/
 
-	event MiningMultiplierChanged(int256 multiplier);
+	event MiningMultiplierChanged(uint256 multiplier);
 	event AddressesUpdated(IWINR token, IVault vault);
 	event ConfigUpdated(uint256[] _percentages, Config[] _configs);
-	event VolumeIncreased(uint256 _amount, uint256 newVolume);
-	event VolumeDecreased(uint256 _amount, uint256 newVolume);
-
+	event VolumeIncreased(uint256 _amount, uint256 _newVolume, uint256 _dayIndex);
+	event VolumeDecreased(uint256 _amount, uint256 _newVolume, uint256 _dayIndex);
+	event AccountMultiplierChanged(address _account, uint256 _newMultiplier);
+	event ParityIntervalUpdated(uint64 _newInterval);
+	event ParityUpdated(uint256 _newParity);
+	event MaxAccountMultiplierUpdated(uint256 _newMultiplier);
 	/*==================================================== State Variables ====================================================*/
 
 	struct Config {
-		int256 maxMultiplier;
-		int256 minMultiplier;
+		uint256 minMultiplier;
+		uint256 maxMultiplier;
 	}
+
 	IWINR public WINR;
 	IVault public vault;
-	address public pool;
-	IERC20 public pairToken;
-	address public tokenManager;
-
 	/// @notice max mint amount by games
 	uint256 public immutable MAX_MINT;
 	/// @notice Last parity of ETH/WINR
 	uint256 public parity;
+	/// @notice Interval of parity update
+	uint64 public parityInterval = 1 days;
+	/// @notice max multiplier of accounts
+	uint256 public maxAccountMultiplier;
+	/// @notice Last parity update time
+	uint256 public lastParityUpdateTime;
 	/// @notice Last calculated multipliers index id
 	uint256 public lastCalculatedIndex;
 	/// @notice The volumes of given period duration
 	mapping(uint256 => uint256) public dailyVolumes;
 	/// @notice The volumes of given period duration
-	mapping(uint256 => int256) public dailyVolumeCurrentMultiplier;
+	mapping(uint256 => uint256) public dailyVolumeCurrentMultiplier;
+	/// @notice Multipliers of accounts
+	mapping(address => uint256) public accountMultipliers;
 	/// @notice Last calculated multiplier
-	int256 public currentMultiplier;
+	uint256 public currentMultiplier;
 	/// @notice Start time of periods
-	uint256 public volumeRecordStartTime = block.timestamp - 1 days;
+	uint256 public immutable volumeRecordStartTime = block.timestamp - 2 days;
 
 	uint256[] public percentages;
 	mapping(uint256 => Config) public halvings;
@@ -55,13 +62,10 @@ contract MiningStrategy is AccessControlBase {
 	constructor(
 		address _vaultRegistry,
 		address _timelock,
-		uint256[] memory _percentages,
-		Config[] memory _configs,
 		uint256 _maxMint
 	) AccessControlBase(_vaultRegistry, _timelock) {
-		_updateHalvings(_percentages, _configs);
-		currentMultiplier = _configs[0].maxMultiplier;
 		MAX_MINT = _maxMint;
+		maxAccountMultiplier = 2e18;
 	}
 
 	/**
@@ -77,6 +81,7 @@ contract MiningStrategy is AccessControlBase {
 	 */
 	function _updateHalvings(uint256[] memory _percentages, Config[] memory _configs) internal {
 		require(_percentages.length == _configs.length, "Lengths must be equal");
+		require(_percentages.length <= type(uint8).max, "Too many halvings");
 		for (uint256 i = 0; i < _percentages.length; i++) {
 			require(_configs[i].maxMultiplier != 0, "Max zero");
 			require(_configs[i].minMultiplier != 0, "Min zero");
@@ -86,8 +91,12 @@ contract MiningStrategy is AccessControlBase {
 			);
 			halvings[_percentages[i]] = _configs[i];
 		}
-
 		percentages = _percentages;
+
+		if (currentMultiplier == 0) {
+			currentMultiplier = _configs[0].maxMultiplier;
+		}
+
 		emit ConfigUpdated(_percentages, _configs);
 	}
 
@@ -109,34 +118,51 @@ contract MiningStrategy is AccessControlBase {
 	 * @dev Allows the governance role to update the contract's addresses for the WINR token, Vault, Pool, and Pair Token.
 	 * @param _WINR The new address of the WINR token contract.
 	 * @param _vault The new address of the Vault contract.
-	 * @param _pool The new address of the Pool contract.
-	 * @param _pairToken The new address of the Pair Token contract.
 	 * @notice Each input address must not be equal to the zero address.
 	 * @notice The function updates the corresponding variables with the new addresses.
-	 * @notice After the addresses are updated, the parity variable is updated by calling the getParity() function.
 	 * @notice Finally, an AddressesUpdated event is emitted with the updated WINR and Vault addresses.
 	 */
 	function updateAddresses(
 		IWINR _WINR,
-		IVault _vault,
-		address _pool,
-		IERC20 _pairToken
+		IVault _vault
 	) public onlyGovernance {
 		require(address(_WINR) != address(0), "WINR address zero");
 		require(address(_vault) != address(0), "Vault zero");
-		require(_pool != address(0), "Pool zero");
-		require(address(_pairToken) != address(0), "Pair Token zero");
+
 		WINR = _WINR;
 		vault = _vault;
-		pool = _pool;
-		pairToken = _pairToken;
-		parity = getParity();
+
 
 		emit AddressesUpdated(_WINR, _vault);
 	}
 
-	function setTokenManager(address _tokenManager) external onlyGovernance {
-		tokenManager = _tokenManager;
+	/**
+	 *
+	 * @param _maxAccountMultiplier The new value for the maxAccountMultiplier variable.
+	 * @notice This function allows the governance role to update the maxAccountMultiplier variable.
+	 */
+	function updateMaxAccountMultiplier(uint256 _maxAccountMultiplier) external onlyGovernance {
+		maxAccountMultiplier = _maxAccountMultiplier;
+
+		emit MaxAccountMultiplierUpdated(_maxAccountMultiplier);
+	}
+
+	/**
+	 * 
+	 * @param _account The account for which to set the multiplier.
+	 * @param _multiplier multiplier to set for the account.
+	 */
+	function setAccountMultiplier(address _account, uint256 _multiplier) external onlyProtocol {
+		require(_multiplier <= maxAccountMultiplier, "Multiplier too high");
+		accountMultipliers[_account] = _multiplier;
+
+		emit AccountMultiplierChanged(_account, _multiplier);
+	}
+
+	function updateParityInterval(uint64 _parityInterval) external onlyGovernance {
+		parityInterval = _parityInterval;
+
+		emit ParityIntervalUpdated(_parityInterval);
 	}
 
 	/*==================================================== Volume ===========================================================*/
@@ -157,11 +183,10 @@ contract MiningStrategy is AccessControlBase {
 	}
 
 	/**
-
     @dev Public function to calculate the dollar value of a given token amount.
     @param _token The address of the whitelisted token on the vault.
     @param _amount The amount of the given token.
-    @return _dollarValue The dollar value of the given token amount.
+    @return dollarValue_ The dollar value of the given token amount.
     @notice This function takes the address of a whitelisted token on the vault and an amount of that token,
     and calculates the dollar value of that amount by multiplying the amount by the current dollar value of the token
     on the vault and dividing by 10^decimals of the token. The result is then divided by 1e12 to convert to USD.
@@ -169,10 +194,10 @@ contract MiningStrategy is AccessControlBase {
 	function computeDollarValue(
 		address _token,
 		uint256 _amount
-	) public view returns (uint256 _dollarValue) {
-		uint256 _decimals = IERC20Metadata(_token).decimals(); // Get the decimals of the token using the IERC20Metadata interface
-		_dollarValue = ((_amount * vault.getMinPrice(_token)) / 10 ** _decimals); // Calculate the dollar value by multiplying the amount by the current dollar value of the token on the vault and dividing by 10^decimals
-		_dollarValue = _dollarValue / 1e12; // Convert the result to USD by dividing by 1e12
+	) public view returns (uint256 dollarValue_) {
+		uint256 decimals_ = vault.tokenDecimals(_token); // Get the decimals of the token using the Vault interface
+		dollarValue_ = ((_amount * vault.getMinPrice(_token)) / 10 ** decimals_); // Calculate the dollar value by multiplying the amount by the current dollar value of the token on the vault and dividing by 10^decimals
+		dollarValue_ = dollarValue_ / 1e12; // Convert the result to USD by dividing by 1e12
 	}
 
 	/**
@@ -186,11 +211,13 @@ contract MiningStrategy is AccessControlBase {
 	 *  the computeDollarValue function, adds it to the volume of the current day
 	 *  index, and emits a VolumeIncreased event with the updated volume.
 	 */
-	function increaseVolume(address _input, uint256 _amount) external onlyManager {
-		uint256 _dayIndex = getVolumeDayIndex(); // Get the current day index to update the volume
-		uint256 _dollarValue = computeDollarValue(_input, _amount); // Calculate the dollar value of the token amount using the computeDollarValue function
-		dailyVolumes[_dayIndex] += _dollarValue; // Increase the volume of the current day index by the calculated dollar value
-		emit VolumeIncreased(_dollarValue, dailyVolumes[_dayIndex]); // Emit a VolumeIncreased event with the updated volume
+	function increaseVolume(address _input, uint256 _amount) external onlyProtocol {
+		uint256 dayIndex_ = getVolumeDayIndex(); // Get the current day index to update the volume
+		uint256 dollarValue_ = computeDollarValue(_input, _amount); // Calculate the dollar value of the token amount using the computeDollarValue function
+		unchecked {
+			dailyVolumes[dayIndex_] += dollarValue_; // Increase the volume of the current day index by the calculated dollar value
+		}
+		emit VolumeIncreased(dollarValue_, dailyVolumes[dayIndex_], dayIndex_); // Emit a VolumeIncreased event with the updated volume
 	}
 
 	/**
@@ -204,17 +231,38 @@ contract MiningStrategy is AccessControlBase {
 	 *  the computeDollarValue function, subtracts it from the  volume of the current day
 	 *  index, and emits a VolumeDecreased event with the updated volume.
 	 */
-	function decreaseVolume(address _input, uint256 _amount) external onlyManager {
-		uint256 _dayIndex = getVolumeDayIndex(); // Get the current day index to update the  volume
-		uint256 _dollarValue = computeDollarValue(_input, _amount); // Calculate the dollar value of the token amount using the computeDollarValue function
-		dailyVolumes[_dayIndex] -= _dollarValue; // Decrease the  volume of the current day index by the calculated dollar value
-		emit VolumeDecreased(_dollarValue, dailyVolumes[_dayIndex]); // Emit a VolumeDecreased event with the updated volume
+	function decreaseVolume(address _input, uint256 _amount) external onlyProtocol {
+		uint256 dayIndex_ = getVolumeDayIndex(); // Get the current day index to update the  volume
+		uint256 dollarValue_ = computeDollarValue(_input, _amount); // Calculate the dollar value of the token amount using the computeDollarValue function
+
+		// Decrease the  volume of the current day index by the calculated dollar value
+		if (dailyVolumes[dayIndex_] > dollarValue_) {
+			dailyVolumes[dayIndex_] -= dollarValue_;
+		} else {
+			dailyVolumes[dayIndex_] = 0;
+		}
+
+		emit VolumeDecreased(dollarValue_, dailyVolumes[dayIndex_], dayIndex_); // Emit a VolumeDecreased event with the updated volume
 	}
 
 	/*================================================== Mining =================================================*/
 
-	function getParity() public view returns (uint256 _value) {
-		_value = (pairToken.balanceOf(pool) * PRECISION) / WINR.balanceOf(pool);
+	/**
+	 *
+	 * @param _parity The parity of the USDC/WINR
+	 * @dev This function is called by the Support accounts to set the parity of the USDC/WINR
+	 */
+	function setParity(uint256 _parity) external onlyTeam {
+		// Parity can be updated once per interval
+		require(
+			lastParityUpdateTime + parityInterval <= block.timestamp,
+			"Parity: parity can be updated once per interval"
+		);
+
+		parity = _parity;
+		lastParityUpdateTime = block.timestamp;
+
+		emit ParityUpdated(_parity);
 	}
 
 	/**
@@ -224,97 +272,116 @@ contract MiningStrategy is AccessControlBase {
 	 * @dev _mintedByGames and MAX_MINT are using to halving calculation
 	 * @param _mintedByGames The total minted Vested WINR amount
 	 */
-	function _getMultiplier(uint256 _mintedByGames) internal returns (int256) {
-		// Get the current day's index
-		uint256 index = getVolumeDayIndex();
+	function _getMultiplier(uint256 _mintedByGames) internal returns (uint256) {
+		uint256 index_ = getVolumeDayIndex();
 
 		// If the current day's index is the same as the last calculated index, return the current multiplier
-		if (lastCalculatedIndex == index) {
+		if (lastCalculatedIndex == index_) {
 			return currentMultiplier;
 		}
 
 		// Get the current configuration based on the number of tokens minted by games and the maximum number of tokens that can be minted
-		Config memory config = getCurrentConfig(_mintedByGames);
+		Config memory config_ = getCurrentConfig(_mintedByGames);
 
 		// Get the volume of the previous day and the current day
-		uint256 prevDayVolume = getVolumeOfDay(index - 1);
-		uint256 currentDayVolume = getVolumeOfDay(index);
+		uint256 prevDayVolume_ = getVolumeOfDay(index_ - 2);
+		uint256 currentDayVolume_ = getVolumeOfDay(index_ - 1);
 
 		// If either the current day's volume or the previous day's volume is zero, return the current multiplier
-		if (currentDayVolume == 0 || prevDayVolume == 0) {
-			dailyVolumeCurrentMultiplier[index] = currentMultiplier;
+		if (currentDayVolume_ == 0 || prevDayVolume_ == 0) {
+			dailyVolumeCurrentMultiplier[index_] = currentMultiplier;
 			return currentMultiplier;
 		}
 
 		// Calculate the percentage change in volume between the previous day and the current day
-		int256 diff = int256(
-			currentDayVolume > prevDayVolume
-				? currentDayVolume - prevDayVolume
-				: prevDayVolume - currentDayVolume
+		uint256 diff_ = (
+			currentDayVolume_ > prevDayVolume_
+				? currentDayVolume_ - prevDayVolume_
+				: prevDayVolume_ - currentDayVolume_
 		);
-		int256 periodChangeRate = (diff * int256(PRECISION)) / int256(prevDayVolume);
+		uint256 periodChangeRate_ = ((diff_ * 1e36) / prevDayVolume_) / PRECISION;
 
-		// If the current day's volume is less than the previous day's volume, increase the multiplier, otherwise decrease it
-		if (currentDayVolume < prevDayVolume) {
-			currentMultiplier =
-				(currentMultiplier * (1e18 + 2 * periodChangeRate)) /
-				int256(PRECISION);
+		// Calculate the new multiplier and ensure it's within the configured range
+		uint256 newMultiplier;
+		if (currentDayVolume_ < prevDayVolume_) {
+			newMultiplier =
+				(currentMultiplier * (1e18 + 2 * periodChangeRate_)) /
+				PRECISION;
 		} else {
-			int256 decrease = (currentMultiplier * periodChangeRate) /
-				int256(PRECISION);
-			currentMultiplier = decrease > currentMultiplier
-				? config.minMultiplier
+			uint256 decrease = (currentMultiplier * periodChangeRate_) / PRECISION;
+			newMultiplier = decrease > currentMultiplier
+				? config_.minMultiplier
 				: currentMultiplier - decrease;
 		}
-
-		// Ensure the current multiplier is within the configured maximum and minimum range
-		currentMultiplier = currentMultiplier > config.maxMultiplier
-			? config.maxMultiplier
-			: currentMultiplier;
-		currentMultiplier = currentMultiplier < config.minMultiplier
-			? config.minMultiplier
-			: currentMultiplier;
+		newMultiplier = newMultiplier > config_.maxMultiplier
+			? config_.maxMultiplier
+			: newMultiplier;
+		newMultiplier = newMultiplier < config_.minMultiplier
+			? config_.minMultiplier
+			: newMultiplier;
 
 		// Set the new multiplier for the current day and emit an event
-		dailyVolumeCurrentMultiplier[index] = currentMultiplier;
+		currentMultiplier = newMultiplier;
+		dailyVolumeCurrentMultiplier[index_] = currentMultiplier;
 		emit MiningMultiplierChanged(currentMultiplier);
 
 		// Update the last calculated index and return the current multiplier
-		lastCalculatedIndex = index;
+		lastCalculatedIndex = index_;
 		return currentMultiplier;
 	}
 
+	/**
+	 *
+	 * @param _account address of the account
+	 * @param _amount amount of the token
+	 * @param _mintedByGames minted Vested WINR amount
+	 * @dev This function is called by the Token Manager to calculate the mint amount
+	 * @notice This function calculates the mint amount based on the current day's volume and the previous day's volume
+	 */
 	function calculate(
+		address _account,
 		uint256 _amount,
 		uint256 _mintedByGames
-	) external returns (uint256 _mintAmount) {
-		_mintAmount =
-			(_amount *
-				((uint256(_getMultiplier(_mintedByGames)) * PRECISION) / parity)) /
-			PRECISION;
+	) external onlyProtocol returns (uint256 mintAmount_) {
+		// If the account has a multiplier, use it to calculate the mint amount
+		if (accountMultipliers[_account] != 0) {
+			mintAmount_ = _calculate(_amount, accountMultipliers[_account]);
+		} else {
+			// Otherwise, use the current multiplier to calculate the mint amount
+			mintAmount_ = _calculate(_amount, _getMultiplier(_mintedByGames));
+		}
+	}
+
+	/**
+	 * @notice This function calculates the mint amount based on the current day's volume and the previous day's volume
+	 * @param _amount The amount of tokens to calculate the mint amount for
+	 * @param _multiplier The multiplier to use to calculate the mint amount
+	 */
+	function _calculate(uint256 _amount, uint256 _multiplier) internal view returns (uint256) {
+		return ((_amount * _multiplier * PRECISION) / parity) / PRECISION;
 	}
 
 	function getCurrentConfig(
 		uint256 _mintedByGames
 	) public view returns (Config memory config) {
-		uint256 ratio = (PRECISION * _mintedByGames) / MAX_MINT;
-		uint8 index = findIndex(ratio);
-		return halvings[percentages[index]];
+		uint256 ratio_ = (PRECISION * _mintedByGames) / MAX_MINT;
+		uint8 index_ = findIndex(ratio_);
+		return halvings[percentages[index_]];
 	}
 
 	function findIndex(uint256 ratio) internal view returns (uint8 index) {
-		uint8 min = 0;
-		uint8 max = uint8(percentages.length) - 1;
+		uint8 min_ = 0;
+		uint8 max_ = uint8(percentages.length) - 1;
 
-		while (min < max) {
-			uint8 mid = (min + max) / 2;
-			if (ratio < percentages[mid]) {
-				max = mid;
+		while (min_ < max_) {
+			uint8 mid_ = (min_ + max_) / 2;
+			if (ratio < percentages[mid_]) {
+				max_ = mid_;
 			} else {
-				min = mid + 1;
+				min_ = mid_ + 1;
 			}
 		}
 
-		return min;
+		return min_;
 	}
 }

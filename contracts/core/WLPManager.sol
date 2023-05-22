@@ -63,7 +63,7 @@ contract WLPManager is ReentrancyGuard, AccessControlBase, IWLPManager {
 	 * @notice when private mode is enabled, minting and redemption of WLP is not possible (it is disabled) - only exception is that if handlersEnabled is true, whitelisted handlers are able to mint and redeem WLP on behalf of others.
 	 * @param _inPrivateMode bool to set private mdoe
 	 */
-	function setInPrivateMode(bool _inPrivateMode) external onlyGovernance {
+	function setInPrivateMode(bool _inPrivateMode) external onlyTeam {
 		inPrivateMode = _inPrivateMode;
 		emit PrivateModeSet(_inPrivateMode);
 	}
@@ -90,7 +90,7 @@ contract WLPManager is ReentrancyGuard, AccessControlBase, IWLPManager {
 	 */
 	function setMaxPercentageOfWagerFee(
 		uint256 _maxPercentageOfWagerFee
-	) external onlyGovernance {
+	) external onlyTeam {
 		maxPercentageOfWagerFee = _maxPercentageOfWagerFee;
 		emit MaxPercentageOfWagerFeeSet(_maxPercentageOfWagerFee);
 	}
@@ -99,7 +99,7 @@ contract WLPManager is ReentrancyGuard, AccessControlBase, IWLPManager {
 	 * @notice the cooldown durations sets a certain amount of seconds cooldown after a lp withdraw until a neext withdraw is able to be conducted
 	 * @param _cooldownDuration amount of seconds for the cooldown
 	 */
-	function setCooldownDuration(uint256 _cooldownDuration) external override onlyGovernance {
+	function setCooldownDuration(uint256 _cooldownDuration) external override onlyTeam {
 		require(
 			_cooldownDuration <= MAX_COOLDOWN_DURATION,
 			"WLPManager: invalid _cooldownDuration"
@@ -116,7 +116,7 @@ contract WLPManager is ReentrancyGuard, AccessControlBase, IWLPManager {
 	function setAumAdjustment(
 		uint256 _aumAddition,
 		uint256 _aumDeduction
-	) external onlyGovernance {
+	) external onlyTeam {
 		aumAddition = _aumAddition;
 		aumDeduction = _aumDeduction;
 		emit AumAdjustmentSet(_aumAddition, _aumDeduction);
@@ -148,7 +148,8 @@ contract WLPManager is ReentrancyGuard, AccessControlBase, IWLPManager {
 			_token,
 			_amount,
 			_minUsdw,
-			_minWlp
+			_minWlp,
+			false
 		);
 	}
 
@@ -177,7 +178,8 @@ contract WLPManager is ReentrancyGuard, AccessControlBase, IWLPManager {
 			_token,
 			_amount,
 			_minUsdw,
-			_minWlp
+			_minWlp,
+			false
 		);
 	}
 
@@ -242,7 +244,7 @@ contract WLPManager is ReentrancyGuard, AccessControlBase, IWLPManager {
 		bool _pausePayoutsOnCB,
 		bool _pauseSwapOnCB,
 		uint256 _reserveDeductionOnCB
-	) external onlyManager {
+	) external onlyTeam {
 		pausePayoutsOnCB = _pausePayoutsOnCB;
 		pauseSwapOnCB = _pauseSwapOnCB;
 		reserveDeductionOnCB = _reserveDeductionOnCB;
@@ -289,7 +291,7 @@ contract WLPManager is ReentrancyGuard, AccessControlBase, IWLPManager {
 	/**
 	 * @notice functuion that undoes/resets the circuitbreaker
 	 */
-	function resetCircuitBreaker() external onlyManager {
+	function resetCircuitBreaker() external onlyTeam {
 		circuitBreakerActive = false;
 		vault.setPayoutHalted(false);
 		vault.setIsSwapEnabled(true);
@@ -394,14 +396,15 @@ contract WLPManager is ReentrancyGuard, AccessControlBase, IWLPManager {
 			_token,
 			_amount,
 			_minUsdw,
-			_minWlp
+			_minWlp,
+			true
 		);
 	}
 
 	/**
 	 * @param _feeCollector address of the fee collector
 	 */
-	function setFeeCollector(address _feeCollector) external onlyGovernance {
+	function setFeeCollector(address _feeCollector) external onlyTimelockGovernance {
 		feeCollector = _feeCollector;
 	}
 
@@ -412,7 +415,7 @@ contract WLPManager is ReentrancyGuard, AccessControlBase, IWLPManager {
 	 */
 	function setCollectFeesOnLiquidityEvent(
 		bool _collectFeesOnLiquidityEvent
-	) external onlyGovernance {
+	) external onlyTeam {
 		collectFeesOnLiquidityEvent = _collectFeesOnLiquidityEvent;
 	}
 
@@ -441,7 +444,8 @@ contract WLPManager is ReentrancyGuard, AccessControlBase, IWLPManager {
 		address _tokenDeposit,
 		uint256 _amountDeposit,
 		uint256 _minUsdw,
-		uint256 _minWlp
+		uint256 _minWlp,
+		bool _swapLess
 	) private returns (uint256 mintAmountWLP_) {
 		require(_amountDeposit != 0, "WLPManager: invalid _amount");
 		if (collectFeesOnLiquidityEvent) {
@@ -476,7 +480,8 @@ contract WLPManager is ReentrancyGuard, AccessControlBase, IWLPManager {
 		// call the deposit function in the vault (external call)
 		uint256 usdwAmount_ = vault.deposit(
 			_tokenDeposit, // the token that is being deposited into the vault for WLP
-			address(this) // the address that will receive the USDW tokens (minted by the vault)
+			address(this), // the address that will receive the USDW tokens (minted by the vault)
+			_swapLess
 		);
 		// the vault has minted USDW to this contract (WLP Manager), the amount of USDW minted is equivalent to the value of the deposited tokens (in USD, scaled 1e18) now this WLP Manager contract has received usdw, 1e18 usdw is 1 USD 'debt'. If the caller has provided tokens worth $10k, then about 1e5 * 1e18 USDW will be minted. This ratio of value deposited vs amount of USDW minted will remain the same.
 
