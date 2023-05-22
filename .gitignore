@@ -14,3 +14,5 @@ cache
 cache/**
 artifacts/**
 artifacts
+forge-cache
+forge-cache/**
